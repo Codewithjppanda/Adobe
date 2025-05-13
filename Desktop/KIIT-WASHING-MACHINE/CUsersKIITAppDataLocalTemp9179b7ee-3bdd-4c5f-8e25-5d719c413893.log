@@ -1,0 +1,33 @@
+frontend@0.1.0 C:\Users\KIIT\Desktop\KIIT-WASHING-MACHINE\washing-machine-app\frontend
+└─┬ @nextui-org/react@2.6.11
+  ├─┬ @nextui-org/accordion@2.2.7
+  │ ├─┬ @react-aria/focus@3.19.0
+  │ │ └── clsx@2.1.1
+  │ └─┬ @react-aria/utils@3.26.0
+  │   └── clsx@2.1.1
+  ├─┬ @nextui-org/checkbox@2.3.8
+  │ └─┬ @react-aria/checkbox@3.15.0
+  │   └─┬ @react-aria/toggle@3.11.2
+  │     └─┬ @react-aria/utils@3.28.2
+  │       └── clsx@2.1.1
+  ├─┬ @nextui-org/code@2.2.6
+  │ └─┬ @nextui-org/system-rsc@2.3.5
+  │   └── clsx@1.2.1 deduped
+  ├─┬ @nextui-org/date-input@2.3.8
+  │ └─┬ @react-aria/datepicker@3.12.0
+  │   └─┬ @react-aria/spinbutton@3.6.14
+  │     └─┬ @react-aria/utils@3.28.2
+  │       └── clsx@2.1.1
+  ├─┬ @nextui-org/table@2.2.8
+  │ └─┬ @react-aria/table@3.16.0
+  │   └─┬ @react-aria/grid@3.13.0
+  │     ├─┬ @react-aria/focus@3.20.2
+  │     │ └── clsx@2.1.1
+  │     └─┬ @react-aria/utils@3.28.2
+  │       └── clsx@2.1.1 deduped
+  └─┬ @nextui-org/theme@2.4.5
+    ├── clsx@1.2.1
+    ├── tailwind-merge@2.6.0
+    └─┬ tailwind-variants@0.1.20
+      └── tailwind-merge@1.14.0
+
