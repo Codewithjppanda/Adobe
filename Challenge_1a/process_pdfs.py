@@ -10,12 +10,13 @@ import re
 from collections import defaultdict, Counter
 
 
-class GenericOutlineExtractor:
+class CorrectedOutlineExtractor:
     def __init__(self):
         self.font_stats = defaultdict(int)
         self.text_blocks = []
         self.extracted_title = ""
         self.detected_language = "en"
+        self.font_size_hierarchy = {}  # Track font size to level mapping
         
     def detect_language(self, text):
         """Detect document language based on character analysis"""
@@ -30,7 +31,6 @@ class GenericOutlineExtractor:
         arabic_count = 0
         
         for char in text:
-            # Japanese detection (Hiragana, Katakana, Kanji)
             if '\u3040' <= char <= '\u309F':  # Hiragana
                 japanese_count += 1
                 cjk_count += 1
@@ -72,7 +72,6 @@ class GenericOutlineExtractor:
         
         # Language-specific normalization
         if self.detected_language == "ja":
-            # Japanese: Convert full-width to half-width for numbers/ASCII
             text = text.translate(str.maketrans(
                 '０１２３４５６７８９．',
                 '0123456789.'
@@ -80,66 +79,8 @@ class GenericOutlineExtractor:
         
         return text.strip()
     
-    def is_universal_heading_pattern(self, text):
-        """Detect universal heading patterns (no content-specific logic)"""
-        text_normalized = self.normalize_text(text)
-        
-        if self.detected_language == "ja":
-            # Japanese structural patterns only
-            japanese_patterns = [
-                r'^第[一二三四五六七八九十\d]+章',  # Chapter patterns
-                r'^第[一二三四五六七八九十\d]+節',  # Section patterns
-                r'^[一二三四五六七八九十\d]+\.',   # Numbered sections
-                r'^[１-９０]+\.',                   # Full-width numbers
-                r'^●', r'^○', r'^■',               # Bullet points
-                r'^【.*】$',                        # Bracketed headings
-            ]
-            return any(re.search(pattern, text_normalized) for pattern in japanese_patterns)
-        
-        elif self.detected_language == "zh":
-            # Chinese structural patterns
-            chinese_patterns = [
-                r'^第[一二三四五六七八九十\d]+章',
-                r'^第[一二三四五六七八九十\d]+节',
-                r'^[一二三四五六七八九十\d]+\.',
-                r'^【.*】$',
-            ]
-            return any(re.search(pattern, text_normalized) for pattern in chinese_patterns)
-        
-        elif self.detected_language == "ko":
-            # Korean structural patterns
-            korean_patterns = [
-                r'^제[일이삼사오육칠팔구십\d]+장',
-                r'^제[일이삼사오육칠팔구십\d]+절',
-                r'^[일이삼사오육칠팔구십\d]+\.',
-            ]
-            return any(re.search(pattern, text_normalized) for pattern in korean_patterns)
-        
-        elif self.detected_language == "ar":
-            # Arabic structural patterns
-            arabic_patterns = [
-                r'^[٠-٩]+\.',
-                r'^[0-9]+\.',
-            ]
-            return any(re.search(pattern, text_normalized) for pattern in arabic_patterns)
-        
-        else:
-            # Universal Latin/English structural patterns (no content)
-            universal_patterns = [
-                r'^\d+\.?\s+[A-Z]',              # "1. Heading" or "1 Heading"
-                r'^\d+\.\d+\.?\s+[A-Z]',         # "1.1. Subsection"
-                r'^[IVXLCDM]+\.?\s+[A-Z]',       # "I. Roman numerals"
-                r'^[A-Z]\.?\s+[A-Z]',            # "A. Letter sections"
-                r'^Chapter\s+\d+',               # "Chapter 1"
-                r'^Section\s+\d+',               # "Section 1"
-                r'^Part\s+[IVXLCDM\d]+',        # "Part I" or "Part 1"
-            ]
-            return any(re.search(pattern, text_normalized) for pattern in universal_patterns)
-        
-        return False
-    
     def analyze_fonts(self, pdf_path):
-        """Extract font information with multilingual support"""
+        """Extract font information starting from page 0"""
         self.font_stats.clear()
         self.text_blocks.clear()
         
@@ -157,8 +98,8 @@ class GenericOutlineExtractor:
         self.detected_language = self.detect_language(combined_text)
         print(f"[DEBUG] Detected language: {self.detected_language}")
         
-        # Generic page numbering (start from 1 for most documents)
-        start_page = 1
+        # START FROM PAGE 0 (corrected)
+        start_page = 0
         
         # Second pass: extract with font information
         for page_num, page in enumerate(extract_pages(pdf_path), start=start_page):
@@ -168,7 +109,7 @@ class GenericOutlineExtractor:
                     if not text:
                         continue
                     
-                    # Normalize text for the detected language
+                    # Normalize text
                     text = self.normalize_text(text)
                     if not text:
                         continue
@@ -185,7 +126,7 @@ class GenericOutlineExtractor:
                     font_names = [getattr(ch, 'fontname', '') for ch in chars]
                     most_common_font = Counter(font_names).most_common(1)[0][0] if font_names else ''
                     
-                    # Universal style detection
+                    # Style detection
                     is_bold = any('bold' in font.lower() for font in font_names if font)
                     
                     block_info = {
@@ -198,73 +139,214 @@ class GenericOutlineExtractor:
                         'y': element.y0,
                         'length': len(text),
                         'word_count': len(text.split()) if self.detected_language in ['en', 'ar'] else len(text),
-                        'lines': text.count('\n') + 1
+                        'lines': text.count('\n') + 1,
+                        'is_all_caps': text.isupper(),
+                        'has_mixed_case': not text.isupper() and not text.islower()
                     }
                     
                     self.text_blocks.append(block_info)
                     self.font_stats[round(avg_size, 1)] += 1
     
-    def extract_title(self):
-        """Generic title extraction without hardcoded logic"""
-        first_page_blocks = [b for b in self.text_blocks if b['page'] == 1]
+    def build_font_hierarchy(self):
+        """Build font size hierarchy to correctly map font sizes to heading levels"""
+        if not self.text_blocks:
+            return
+        
+        # Get all font sizes and their frequencies
+        font_sizes = list(self.font_stats.keys())
+        font_sizes.sort(reverse=True)  # Largest first
+        
+        # Determine body text size (most common)
+        body_size = max(self.font_stats.items(), key=lambda x: x[1])[0]
+        
+        # Build hierarchy mapping
+        self.font_size_hierarchy = {}
+        
+        # Filter out sizes that are clearly headings (larger than body)
+        heading_sizes = [size for size in font_sizes if size > body_size]
+        heading_sizes.sort(reverse=True)  # Largest first
+        
+        print(f"[DEBUG] Body size: {body_size}, Heading sizes: {heading_sizes}")
+        
+        # Assign heading levels based on font size
+        for i, size in enumerate(heading_sizes[:3]):  # Max 3 heading levels
+            self.font_size_hierarchy[size] = i + 1  # H1, H2, H3
+        
+        print(f"[DEBUG] Font hierarchy: {self.font_size_hierarchy}")
+    
+    def extract_title_corrected(self):
+        """Corrected title extraction logic"""
+        # Only look at first page (page 0)
+        first_page_blocks = [b for b in self.text_blocks if b['page'] == 0]
         
         if not first_page_blocks:
             self.extracted_title = ""
             return ""
         
-        # Find largest font size block as title (universal approach)
-        max_size = max(block['size'] for block in first_page_blocks)
-        title_candidates = [b for b in first_page_blocks if b['size'] >= max_size * 0.95]
+        # Strategy: Look for title patterns vs heading patterns
+        title_candidates = []
         
+        for block in first_page_blocks:
+            text = block['text'].strip()
+            text_lower = text.lower()
+            
+            # Skip obvious non-titles
+            skip_patterns = [
+                r'^\d+$', r'^page \d+', r'^copyright', r'^version',
+                r'^\d+\.\s', r'^chapter \d+', r'^section \d+'
+            ]
+            
+            if any(re.match(pattern, text_lower) for pattern in skip_patterns):
+                continue
+            
+            # Title scoring
+            title_score = 0
+            word_count = len(text.split())
+            
+            # Position weight (higher Y = top of page)
+            max_y = max(b['y'] for b in first_page_blocks)
+            position_ratio = block['y'] / max_y if max_y > 0 else 0
+            if position_ratio >= 0.8:
+                title_score += 3
+            elif position_ratio >= 0.6:
+                title_score += 2
+            
+            # Font size weight
+            max_size = max(b['size'] for b in first_page_blocks)
+            size_ratio = block['size'] / max_size
+            if size_ratio >= 0.95:
+                title_score += 3
+            elif size_ratio >= 0.8:
+                title_score += 2
+            
+            # Length appropriateness for titles
+            if 3 <= word_count <= 20:
+                title_score += 2
+            elif 20 < word_count <= 30:
+                title_score += 1
+            
+            # Check if it looks like a proper title vs heading
+            # Titles usually don't start with numbers or have structural patterns
+            if not re.match(r'^\d+\.', text) and not text.endswith(':'):
+                title_score += 2
+            
+            # Mixed case or proper capitalization
+            if re.match(r'^[A-Z]', text) and not text.isupper():
+                title_score += 1
+            
+            if title_score >= 5:  # Threshold for title
+                title_candidates.append({
+                    'text': text,
+                    'score': title_score,
+                    'block': block
+                })
+        
+        # Check if we should have a title or treat everything as headings
         if title_candidates:
-            # Choose the one with best position (usually top of page)
-            title_block = max(title_candidates, key=lambda b: b['y'])
-            title = self.normalize_text(title_block['text'])
-            title = re.sub(r'\s+', ' ', title)
-            self.extracted_title = title.lower()
-            return title
+            # Sort by score
+            title_candidates.sort(key=lambda x: -x['score'])
+            best_title = title_candidates[0]
+            
+            # Additional validation: ensure it's significantly different from headings
+            other_blocks = [b for b in first_page_blocks if b != best_title['block']]
+            
+            # If there are other substantial blocks, this is likely a real title
+            if len(other_blocks) >= 1:
+                title_text = best_title['text']
+                self.extracted_title = title_text.lower()
+                print(f"[DEBUG] Extracted title: '{title_text}'")
+                return title_text
         
+        # No clear title found - document likely starts with headings
+        print(f"[DEBUG] No clear title found - treating as heading-based document")
+        self.extracted_title = ""
         return ""
     
+    def is_structural_heading_pattern(self, text):
+        """Detect universal structural heading patterns"""
+        text_normalized = self.normalize_text(text)
+        
+        if self.detected_language == "ja":
+            japanese_patterns = [
+                r'^第[一二三四五六七八九十\d]+章',
+                r'^第[一二三四五六七八九十\d]+節',
+                r'^[一二三四五六七八九十\d]+\.',
+                r'^[１-９０]+\.',
+                r'^●', r'^○', r'^■',
+                r'^【.*】$',
+            ]
+            return any(re.search(pattern, text_normalized) for pattern in japanese_patterns)
+        
+        elif self.detected_language == "zh":
+            chinese_patterns = [
+                r'^第[一二三四五六七八九十\d]+章',
+                r'^第[一二三四五六七八九十\d]+节',
+                r'^[一二三四五六七八九十\d]+\.',
+                r'^【.*】$',
+            ]
+            return any(re.search(pattern, text_normalized) for pattern in chinese_patterns)
+        
+        elif self.detected_language == "ko":
+            korean_patterns = [
+                r'^제[일이삼사오육칠팔구십\d]+장',
+                r'^제[일이삼사오육칠팔구십\d]+절',
+                r'^[일이삼사오육칠팔구십\d]+\.',
+            ]
+            return any(re.search(pattern, text_normalized) for pattern in korean_patterns)
+        
+        elif self.detected_language == "ar":
+            arabic_patterns = [
+                r'^[٠-٩]+\.',
+                r'^[0-9]+\.',
+            ]
+            return any(re.search(pattern, text_normalized) for pattern in arabic_patterns)
+        
+        else:
+            # Universal patterns
+            universal_patterns = [
+                r'^\d+\.?\s+[A-Z]',              # "1. Heading"
+                r'^\d+\.\d+\.?\s+[A-Z]',         # "1.1. Subsection"
+                r'^[IVXLCDM]+\.?\s+[A-Z]',       # "I. Roman numerals"
+                r'^[A-Z]\.?\s+[A-Z]',            # "A. Letter sections"
+            ]
+            return any(re.search(pattern, text_normalized) for pattern in universal_patterns)
+        
+        return False
+    
     def is_valid_heading(self, block, body_size):
-        """Generic heading validation without hardcoded content patterns"""
+        """Corrected heading validation"""
         text = block['text'].strip()
         text_lower = text.lower()
         
-        # Skip if this is the title text
+        # Skip if this is the title
         if text_lower == self.extracted_title:
             return False
         
-        # Basic filters (language-adaptive)
+        # Basic filters
         min_length = 2 if self.detected_language in ['ja', 'zh', 'ko'] else 3
         max_length = 200 if self.detected_language in ['ja', 'zh', 'ko'] else 150
         
         if len(text) < min_length or len(text) > max_length:
             return False
         
-        # Universal skip patterns (no content-specific logic)
+        # Universal skip patterns
         skip_patterns = [
             r'^\.+$', r'^\d+\.?\s*$', r'^[a-z]\)?\s*$',
-            r'^page \d+', r'^version \d+\.\d+$',
-            r'^\d{1,2}/\d{1,2}/\d{4}$', r'^copyright.*\d{4}$',
-            r'^www\.', r'^http[s]?://', r'^email:', r'^tel:',
+            r'^page \d+', r'^copyright', r'^version \d+',
+            r'^\d{1,2}/\d{1,2}/\d{4}$', r'^www\.', r'^http',
             r'^\d+$', r'^[ivx]+$'
         ]
         
         if any(re.match(pattern, text_lower) for pattern in skip_patterns):
             return False
         
-        # Font-based validation (universal)
+        # Font-based validation with corrected logic
         size_ratio = block['size'] / body_size if body_size > 0 else 1
         
-        # Check for universal heading patterns
-        has_structural_pattern = self.is_universal_heading_pattern(text)
-        
-        # Universal heading scoring system
         heading_score = 0
         
-        # Font size criteria
-        if size_ratio >= 1.4:
+        # More accurate font size criteria
+        if size_ratio >= 1.5:
             heading_score += 4
         elif size_ratio >= 1.3:
             heading_score += 3
@@ -273,52 +355,51 @@ class GenericOutlineExtractor:
         elif size_ratio >= 1.1:
             heading_score += 1
         
-        # Bold text bonus
+        # Bold bonus
         if block['is_bold']:
             heading_score += 2
         
-        # Length appropriateness
-        word_count = len(text.split()) if self.detected_language in ['en', 'ar'] else len(text)
-        if self.detected_language in ['ja', 'zh', 'ko']:
-            # For CJK languages, character count
-            if 3 <= word_count <= 30:
-                heading_score += 2
-            elif 30 < word_count <= 50:
-                heading_score += 1
-        else:
-            # For Latin-based languages, word count
-            if 2 <= word_count <= 8:
-                heading_score += 2
-            elif 8 < word_count <= 15:
-                heading_score += 1
-        
         # Structural pattern bonus
-        if has_structural_pattern:
+        if self.is_structural_heading_pattern(text):
             heading_score += 3
         
-        # Universal formatting patterns (no content)
-        if text.isupper() and word_count >= 2:  # ALL CAPS
-            heading_score += 1
-        elif re.match(r'^[A-Z][a-zA-Z\s\-\'(),]+$', text) and word_count >= 2:  # Title Case
-            heading_score += 1
-        elif text.endswith(':') and len(text) > 8:  # Ends with colon
+        # Text characteristics
+        word_count = len(text.split()) if self.detected_language in ['en', 'ar'] else len(text)
+        
+        # All caps (common for headings)
+        if block['is_all_caps'] and word_count >= 2:
+            heading_score += 2
+        
+        # Title case
+        elif re.match(r'^[A-Z][a-zA-Z\s\-\'(),]+$', text) and word_count >= 2:
             heading_score += 1
         
-        # Return true if score meets threshold
+        # Ends with colon
+        elif text.endswith(':') and len(text) > 5:
+            heading_score += 1
+        
+        # Length appropriateness
+        if self.detected_language in ['ja', 'zh', 'ko']:
+            if 3 <= word_count <= 30:
+                heading_score += 1
+        else:
+            if 2 <= word_count <= 15:
+                heading_score += 1
+        
         return heading_score >= 4
     
-    def get_heading_level(self, block, text):
-        """Generic heading level determination"""
+    def determine_heading_level_corrected(self, block, text):
+        """Corrected heading level determination using font hierarchy"""
         text_normalized = self.normalize_text(text)
         
-        # Language-specific structural level detection
+        # First try structural patterns
         if self.detected_language == "ja":
             if re.search(r'^第[一二三四五六七八九十\d]+章', text_normalized):
-                return 1  # Chapter
+                return 1
             elif re.search(r'^第[一二三四五六七八九十\d]+節', text_normalized):
-                return 2  # Section
+                return 2
             elif re.search(r'^[一二三四五六七八九十\d]+\.', text_normalized):
-                return 3  # Subsection
+                return 3
         
         elif self.detected_language in ["zh", "ko"]:
             if re.search(r'^第[一二三四五六七八九十\d]+[章节]', text_normalized):
@@ -331,7 +412,7 @@ class GenericOutlineExtractor:
                 return 2
         
         else:
-            # Universal Latin patterns
+            # Universal patterns with corrected logic
             if re.match(r'^\d+\.\s+', text_normalized):
                 return 1  # "1. Main Section"
             elif re.match(r'^\d+\.\d+\.?\s+', text_normalized):
@@ -342,12 +423,15 @@ class GenericOutlineExtractor:
                 return 1  # "I. Roman numerals"
             elif re.match(r'^[A-Z]\.?\s+', text_normalized):
                 return 2  # "A. Letter sections"
-            elif text_normalized.endswith(':'):
-                return 2  # "Section:"
         
-        # Fallback: use font size for level determination
+        # Use font hierarchy mapping
+        font_size = block['size']
+        if font_size in self.font_size_hierarchy:
+            return self.font_size_hierarchy[font_size]
+        
+        # Fallback: use relative font size
         body_size = max(self.font_stats.items(), key=lambda x: x[1])[0] if self.font_stats else 12.0
-        size_ratio = block['size'] / body_size
+        size_ratio = font_size / body_size
         
         if size_ratio >= 1.5:
             return 1
@@ -356,63 +440,85 @@ class GenericOutlineExtractor:
         else:
             return 3
     
-    def enforce_hierarchy(self, headings):
-        """Enforce proper heading hierarchy"""
+    def enforce_corrected_hierarchy(self, headings):
+        """Corrected hierarchy enforcement"""
         if not headings:
             return []
         
-        result = []
-        current_level = 0
-        
+        # Group by page
+        pages = defaultdict(list)
         for heading in headings:
-            base_level = heading['level']
+            pages[heading['page']].append(heading)
+        
+        final_outline = []
+        
+        # Process each page
+        for page_num in sorted(pages.keys()):
+            page_headings = pages[page_num]
             
-            # First heading - start appropriately
-            if current_level == 0:
-                final_level = min(base_level, 2)  # Start with H1 or H2
-                current_level = final_level
-            else:
-                # Enforce logical progression
-                if base_level <= current_level:
-                    final_level = base_level
-                    current_level = final_level
-                elif base_level == current_level + 1:
+            # Sort by position within page (top to bottom)
+            page_headings.sort(key=lambda h: h['position'])
+            
+            # Apply corrected hierarchy logic
+            current_level = 0
+            
+            for heading in page_headings:
+                base_level = heading['level']
+                
+                if current_level == 0:
+                    # First heading on page - use its natural level
                     final_level = base_level
                     current_level = final_level
                 else:
-                    # Don't jump more than one level
-                    final_level = min(current_level + 1, 3)
-                    current_level = final_level
-            
-            # Convert to H1, H2, H3 format
-            level_map = {1: 'H1', 2: 'H2', 3: 'H3'}
-            
-            result.append({
-                'level': level_map.get(final_level, 'H3'),
-                'text': heading['text'],
-                'page': heading['page']
-            })
+                    # Subsequent headings - enforce logical flow
+                    if base_level <= current_level:
+                        # Same level or going up
+                        final_level = base_level
+                        current_level = final_level
+                    elif base_level == current_level + 1:
+                        # Going one level deeper
+                        final_level = base_level
+                        current_level = final_level
+                    else:
+                        # Going too deep - limit progression
+                        final_level = min(current_level + 1, 3)
+                        current_level = final_level
+                
+                # Map to H1, H2, H3
+                level_map = {1: 'H1', 2: 'H2', 3: 'H3'}
+                
+                final_outline.append({
+                    'level': level_map.get(final_level, 'H3'),
+                    'text': heading['text'],
+                    'page': heading['page']
+                })
+                
+                print(f"[DEBUG] Page {page_num}: '{heading['text'][:40]}...' → {level_map.get(final_level, 'H3')}")
         
-        return result
+        return final_outline
     
     def extract_outline(self, pdf_path):
-        """Main extraction method - completely generic"""
+        """Main extraction with corrected logic"""
         try:
             self.analyze_fonts(pdf_path)
             
             if not self.text_blocks:
                 return {"title": "", "outline": []}
             
-            # Extract title
-            title = self.extract_title()
+            # Build font hierarchy first
+            self.build_font_hierarchy()
             
-            # Determine body text size
+            # Extract title
+            title = self.extract_title_corrected()
+            
+            # Get body text size
             if not self.font_stats:
                 return {"title": title, "outline": []}
             
             body_size = max(self.font_stats.items(), key=lambda x: x[1])[0]
+            print(f"[DEBUG] Body text size: {body_size}")
             
-            # Extract potential headings
+            # Extract headings
             potential_headings = []
             seen_texts = set()
             
@@ -425,10 +531,10 @@ class GenericOutlineExtractor:
                     text = re.sub(r'\s+', ' ', text)
                     text_key = text.lower()
                     
-                    # Avoid duplicates
+                    # Avoid duplicates and title
                     min_length = 2 if self.detected_language in ['ja', 'zh', 'ko'] else 3
-                    if text_key not in seen_texts and len(text) >= min_length:
-                        level = self.get_heading_level(block, text)
+                    if text_key not in seen_texts and len(text) >= min_length and text_key != self.extracted_title:
+                        level = self.determine_heading_level_corrected(block, text)
                         
                         potential_headings.append({
                             'text': text,
@@ -438,12 +544,12 @@ class GenericOutlineExtractor:
                         })
                         
                         seen_texts.add(text_key)
+                        print(f"[DEBUG] Valid heading: '{text[:50]}...' (Level: {level}, Page: {block['page']})")
             
-            # Sort by page and position
-            potential_headings.sort(key=lambda h: (h['page'], h['position']))
+            # Apply corrected hierarchy
+            final_outline = self.enforce_corrected_hierarchy(potential_headings)
             
-            # Enforce hierarchy
-            final_outline = self.enforce_hierarchy(potential_headings)
+            print(f"[DEBUG] Final outline: {len(final_outline)} headings")
             
             return {
                 "title": title,
@@ -463,8 +569,8 @@ def process_all_pdfs():
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Initialize generic extractor
-    extractor = GenericOutlineExtractor()
+    # Initialize corrected extractor
+    extractor = CorrectedOutlineExtractor()
     
     # Process all PDF files
     pdf_files = list(input_dir.glob("*.pdf"))
@@ -517,6 +623,6 @@ def process_all_pdfs():
 
 
 if __name__ == "__main__":
-    print("Starting Generic PDF Outline Extraction...")
+    print("Starting Corrected PDF Outline Extraction...")
     process_all_pdfs()
     print("Processing completed.")
