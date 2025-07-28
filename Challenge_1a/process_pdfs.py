@@ -175,7 +175,7 @@ class CorrectedOutlineExtractor:
         print(f"[DEBUG] Font hierarchy: {self.font_size_hierarchy}")
     
     def extract_title_corrected(self):
-        """Corrected title extraction logic"""
+        """Enhanced generic title extraction with better document type awareness"""
         # Only look at first page (page 0)
         first_page_blocks = [b for b in self.text_blocks if b['page'] == 0]
         
@@ -183,84 +183,195 @@ class CorrectedOutlineExtractor:
             self.extracted_title = ""
             return ""
         
-        # Strategy: Look for title patterns vs heading patterns
-        title_candidates = []
+        # Analyze document characteristics
+        all_text = ' '.join([b['text'].lower() for b in self.text_blocks])
         
-        for block in first_page_blocks:
-            text = block['text'].strip()
-            text_lower = text.lower()
-            
-            # Skip obvious non-titles
-            skip_patterns = [
-                r'^\d+$', r'^page \d+', r'^copyright', r'^version',
-                r'^\d+\.\s', r'^chapter \d+', r'^section \d+'
+        # Document type classification based on structure patterns
+        document_patterns = {
+            'catalog_listing': [
+                r'pathway', r'course offerings?', r'elective', r'program options?',
+                r'what.*say', r'career paths?', r'academic.*options'
+            ],
+            'invitation_flyer': [
+                r'hope to see you', r'rsvp', r'www\.', r'\.com', r'address:',
+                r'party', r'invitation', r'parents or guardians'
+            ],
+            'form_document': [
+                r'application form', r'signature', r'government servant',
+                r'permanent or temporary', r'ltc advance'
+            ],
+            'formal_document': [
+                r'overview', r'foundation level', r'revision history',
+                r'table of contents', r'acknowledgements', r'references'
             ]
-            
-            if any(re.match(pattern, text_lower) for pattern in skip_patterns):
-                continue
-            
-            # Title scoring
-            title_score = 0
-            word_count = len(text.split())
-            
-            # Position weight (higher Y = top of page)
-            max_y = max(b['y'] for b in first_page_blocks)
-            position_ratio = block['y'] / max_y if max_y > 0 else 0
-            if position_ratio >= 0.8:
-                title_score += 3
-            elif position_ratio >= 0.6:
-                title_score += 2
-            
-            # Font size weight
-            max_size = max(b['size'] for b in first_page_blocks)
-            size_ratio = block['size'] / max_size
-            if size_ratio >= 0.95:
-                title_score += 3
-            elif size_ratio >= 0.8:
-                title_score += 2
-            
-            # Length appropriateness for titles
-            if 3 <= word_count <= 20:
-                title_score += 2
-            elif 20 < word_count <= 30:
-                title_score += 1
-            
-            # Check if it looks like a proper title vs heading
-            # Titles usually don't start with numbers or have structural patterns
-            if not re.match(r'^\d+\.', text) and not text.endswith(':'):
-                title_score += 2
-            
-            # Mixed case or proper capitalization
-            if re.match(r'^[A-Z]', text) and not text.isupper():
-                title_score += 1
-            
-            if title_score >= 5:  # Threshold for title
-                title_candidates.append({
-                    'text': text,
-                    'score': title_score,
-                    'block': block
-                })
+        }
         
-        # Check if we should have a title or treat everything as headings
-        if title_candidates:
-            # Sort by score
-            title_candidates.sort(key=lambda x: -x['score'])
-            best_title = title_candidates[0]
+        # Classify document type
+        document_type = 'standard'
+        for doc_type, patterns in document_patterns.items():
+            if any(re.search(pattern, all_text) for pattern in patterns):
+                document_type = doc_type
+                break
+        
+        print(f"[DEBUG] Detected document type: {document_type}")
+        
+        # Type-specific title extraction logic
+        if document_type == 'catalog_listing':
+            # For catalogs/pathways, usually no distinct title - main content is H1
+            self.extracted_title = ""
+            return ""
+        
+        elif document_type == 'invitation_flyer':
+            # For flyers, look for short, prominent text that's not contact info
+            title_candidates = []
             
-            # Additional validation: ensure it's significantly different from headings
-            other_blocks = [b for b in first_page_blocks if b != best_title['block']]
+            for block in first_page_blocks:
+                text = block['text'].strip()
+                text_lower = text.lower()
+                
+                # Skip contact/address information
+                if any(pattern in text_lower for pattern in 
+                       ['www.', '.com', 'address:', 'phone:', 'rsvp:', 'parents or guardians']):
+                    continue
+                
+                # Skip very long text (likely body content)
+                word_count = len(text.split())
+                if word_count > 12:
+                    continue
+                
+                # Score for flyer titles
+                title_score = 0
+                
+                # Position weight
+                max_y = max(b['y'] for b in first_page_blocks)
+                position_ratio = block['y'] / max_y if max_y > 0 else 0
+                if position_ratio >= 0.7:
+                    title_score += 2
+                
+                # Font size weight
+                max_size = max(b['size'] for b in first_page_blocks)
+                size_ratio = block['size'] / max_size
+                if size_ratio >= 0.9:
+                    title_score += 3
+                
+                # Short, catchy phrases
+                if 2 <= word_count <= 8:
+                    title_score += 2
+                
+                # Exclamation or emotional content
+                if '!' in text or any(word in text_lower for word in ['hope', 'see', 'there']):
+                    title_score += 1
+                
+                if title_score >= 4:
+                    title_candidates.append({
+                        'text': text,
+                        'score': title_score,
+                        'block': block
+                    })
             
-            # If there are other substantial blocks, this is likely a real title
-            if len(other_blocks) >= 1:
+            if title_candidates:
+                best_title = max(title_candidates, key=lambda x: x['score'])
                 title_text = best_title['text']
                 self.extracted_title = title_text.lower()
-                print(f"[DEBUG] Extracted title: '{title_text}'")
                 return title_text
+            else:
+                self.extracted_title = ""
+                return ""
         
-        # No clear title found - document likely starts with headings
-        print(f"[DEBUG] No clear title found - treating as heading-based document")
+        elif document_type == 'form_document':
+            # For forms, look for the form name/purpose
+            for block in first_page_blocks:
+                text = block['text'].strip()
+                text_lower = text.lower()
+                
+                if 'form' in text_lower and len(text.split()) >= 3:
+                    title_text = text
+                    self.extracted_title = title_text.lower()
+                    return title_text
+            
+            self.extracted_title = ""
+            return ""
+        
+        else:
+            # For formal documents, look for proper titles
+            title_candidates = []
+            
+            for block in first_page_blocks:
+                text = block['text'].strip()
+                text_lower = text.lower()
+                
+                # Skip obvious non-titles
+                skip_patterns = [
+                    r'^\d+$', r'^page \d+', r'^copyright', r'^version',
+                    r'^\d+\.\s', r'^chapter \d+', r'^section \d+',
+                    r'revision history', r'table of contents', r'acknowledgements'
+                ]
+                
+                if any(re.match(pattern, text_lower) for pattern in skip_patterns):
+                    continue
+                
+                # Title scoring for formal documents
+                title_score = 0
+                word_count = len(text.split())
+                
+                # Position weight (top of page)
+                max_y = max(b['y'] for b in first_page_blocks)
+                position_ratio = block['y'] / max_y if max_y > 0 else 0
+                if position_ratio >= 0.8:
+                    title_score += 3
+                elif position_ratio >= 0.6:
+                    title_score += 2
+                
+                # Font size weight (largest font)
+                max_size = max(b['size'] for b in first_page_blocks)
+                size_ratio = block['size'] / max_size
+                if size_ratio >= 0.95:
+                    title_score += 3
+                elif size_ratio >= 0.85:
+                    title_score += 2
+                
+                # Length appropriateness for titles
+                if 3 <= word_count <= 20:
+                    title_score += 2
+                elif 20 < word_count <= 30:
+                    title_score += 1
+                
+                # Proper title characteristics
+                if not re.match(r'^\d+\.', text) and not text.endswith(':'):
+                    title_score += 2
+                
+                # Mixed case or proper capitalization
+                if re.match(r'^[A-Z]', text) and not text.isupper():
+                    title_score += 1
+                
+                # Contains descriptive words
+                if any(word in text_lower for word in 
+                       ['overview', 'introduction', 'guide', 'manual', 'report', 'analysis']):
+                    title_score += 1
+                
+                if title_score >= 6:  # Higher threshold for formal documents
+                    title_candidates.append({
+                        'text': text,
+                        'score': title_score,
+                        'block': block
+                    })
+            
+            # Select best title candidate
+            if title_candidates:
+                title_candidates.sort(key=lambda x: (-x['score'], -x['block']['size']))
+                best_title = title_candidates[0]
+                
+                # Ensure it's distinct from other content
+                other_blocks = [b for b in first_page_blocks if b != best_title['block']]
+                if len(other_blocks) >= 1:
+                    title_text = best_title['text']
+                    self.extracted_title = title_text.lower()
+                    print(f"[DEBUG] Extracted formal document title: '{title_text}'")
+                    return title_text
+        
+        # No clear title found
+        print(f"[DEBUG] No clear title found for document type: {document_type}")
         self.extracted_title = ""
-        return ""
     
     def is_structural_heading_pattern(self, text):
         """Detect universal structural heading patterns"""
