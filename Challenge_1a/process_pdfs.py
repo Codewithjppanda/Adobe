@@ -457,8 +457,8 @@ class GenericOutlineExtractor:
 
 def process_all_pdfs():
     """Process all PDFs in input directory and generate JSON outputs"""
-    input_dir = Path("input")
-    output_dir = Path("output")
+    input_dir = Path("/app/input")
+    output_dir = Path("/app/output")
     
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
